@@ -1,3 +1,82 @@
+server:
+  port: 8081
+
 spring:
   application:
     name: customer-service
+
+  config:
+    import: optional:configserver:http://localhost:8888
+
+  datasource:
+    url: jdbc:postgresql://localhost:5435/customer_db
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: customer-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+
+# JWT config
+jwt:
+  secret: ${JWT_SECRET:4a8f2e1b9d3c7f5a6e2d8b4c1f9e3a7d2b5c8f4e1a6d9b3c7f2e5a8d1b4c9f3e}
+  expiration: 900000        # 15 minutes (ms)
+  refresh-expiration: 604800000  # 7 jours (ms)
+
+# Feign : document-service
+services:
+  document-service:
+    url: ${DOCUMENT_SERVICE_URL:http://localhost:8082}
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# Swagger
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# Logging
+logging:
+  level:
+    com.banking.customer: DEBUG
+    org.springframework.security: INFO
