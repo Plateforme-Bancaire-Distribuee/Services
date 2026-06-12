@@ -1,10 +1,11 @@
+from app.schemas.base_schema import CamelBaseModel
 from pydantic import BaseModel
 from datetime import datetime, date
 from typing import Optional
 
 # ── Requêtes ──────────────────────────────────────────────
 
-class OcrTriggerRequest(BaseModel):
+class OcrTriggerRequest(CamelBaseModel):
     """Reçu depuis customer-service via Feign pour déclencher l'OCR."""
     client_nom: str
     client_prenom: str
@@ -25,7 +26,7 @@ class DocumentResponse(BaseModel):
     model_config = {"from_attributes": True}  # équivalent de @JsonProperty
 
 
-class OcrResponse(BaseModel):
+class OcrResponse(CamelBaseModel):
     """Retourné après traitement OCR."""
     document_id: int
     statut: str

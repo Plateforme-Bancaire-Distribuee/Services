@@ -77,7 +77,7 @@ async def upload_document(
     return DocumentResponse.model_validate(doc)
 
 
-@router.post("/{document_id}/ocr", response_model=OcrResponse)
+@router.post("/{document_id}/ocr", response_model=OcrResponse, response_model_by_alias=True)
 async def trigger_ocr(
     document_id: int,
     request: OcrTriggerRequest,
