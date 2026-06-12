@@ -1,0 +1,28 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ORM + driver PostgreSQL async
+sqlalchemy==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+
+# Config depuis .env
+pydantic-settings==2.2.1
+pydantic==2.7.1
+
+# OCR
+easyocr==1.7.1
+Pillow==10.3.0
+
+# Stockage objet (MinIO)
+minio==7.2.7
+
+# Kafka async
+aiokafka==0.10.0
+
+# JWT (validation du token émis par customer-service)
+python-jose[cryptography]==3.3.0
+
+# HTTP client (appels vers d'autres services si besoin)
+httpx==0.27.0
