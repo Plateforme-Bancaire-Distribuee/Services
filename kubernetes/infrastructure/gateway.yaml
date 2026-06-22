@@ -1,0 +1,266 @@
+---
+# ConfigMap pour API Gateway
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: banking-system
+data:
+  application.yaml: |
+    server:
+      port: 8080
+    
+    spring:
+      application:
+        name: gateway
+      config:
+        import: optional:configserver:http://service-config:8888
+      
+      cloud:
+        gateway:
+          discovery:
+            locator:
+              enabled: true
+              lower-case-service-id: true
+          
+          httpclient:
+            connect-timeout: 3000
+            response-timeout: 10s
+          
+          default-filters:
+            - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 100
+                redis-rate-limiter.burstCapacity: 200
+                key-resolver: "#{@ipKeyResolver}"
+          
+          routes:
+            # Customer Service
+            - id: customer-service
+              uri: lb://customer-service
+              predicates:
+                - Path=/customers/**,/auth/**,/kyc/**
+              filters:
+                - RewritePath=/customers/(?<path>.*), /$\{path}
+                - name: CircuitBreaker
+                  args:
+                    name: customerServiceCircuitBreaker
+                    fallbackUri: forward:/fallback
+            
+            # Account Service
+            - id: account-service
+              uri: lb://service-account
+              predicates:
+                - Path=/accounts/**
+              filters:
+                - RewritePath=/accounts/(?<path>.*), /$\{path}
+                - name: CircuitBreaker
+                  args:
+                    name: accountServiceCircuitBreaker
+                    fallbackUri: forward:/fallback
+            
+            # Transaction Service
+            - id: transaction-service
+              uri: lb://service-transaction
+              predicates:
+                - Path=/transactions/**
+              filters:
+                - RewritePath=/transactions/(?<path>.*), /$\{path}
+                - name: CircuitBreaker
+                  args:
+                    name: transactionServiceCircuitBreaker
+                    fallbackUri: forward:/fallback
+            
+            # Loan Service
+            - id: loan-service
+              uri: lb://service-loan
+              predicates:
+                - Path=/loans/**
+              filters:
+                - RewritePath=/loans/(?<path>.*), /$\{path}
+                - name: CircuitBreaker
+                  args:
+                    name: loanServiceCircuitBreaker
+                    fallbackUri: forward:/fallback
+            
+            # Document Service
+            - id: document-service
+              uri: lb://service-document
+              predicates:
+                - Path=/documents/**
+              filters:
+                - RewritePath=/documents/(?<path>.*), /$\{path}
+                - name: CircuitBreaker
+                  args:
+                    name: documentServiceCircuitBreaker
+                    fallbackUri: forward:/fallback
+            
+            # Notification Service
+            - id: notification-service
+              uri: lb://service-notification
+              predicates:
+                - Path=/notifications/**
+              filters:
+                - RewritePath=/notifications/(?<path>.*), /$\{path}
+                - name: CircuitBreaker
+                  args:
+                    name: notificationServiceCircuitBreaker
+                    fallbackUri: forward:/fallback
+    
+    eureka:
+      client:
+        service-url:
+          defaultZone: http://service-registry:8761/eureka
+        fetch-registry: true
+        register-with-eureka: true
+      instance:
+        prefer-ip-address: true
+        lease-renewal-interval-in-seconds: 10
+        lease-expiration-duration-in-seconds: 30
+    
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health,info,metrics
+      endpoint:
+        health:
+          show-details: always
+
+---
+# Deployment API Gateway
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: banking-system
+  labels:
+    app: gateway
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+        version: v1
+    spec:
+      containers:
+      - name: gateway
+        image: gateway:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: SPRING_CONFIG_LOCATION
+          value: "file:/etc/config/application.yaml"
+        - name: CONFIG_SERVER_URL
+          value: "http://service-config:8888"
+        - name: JAVA_OPTS
+          value: "-Xms512m -Xmx1024m"
+        - name: SPRING_PROFILES_ACTIVE
+          value: "kubernetes"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: gateway-config
+
+---
+# Service API Gateway (ClusterIP - for internal use)
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: banking-system
+  labels:
+    app: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+
+---
+# Service API Gateway (NodePort - for external access)
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-nodeport
+  namespace: banking-system
+  labels:
+    app: gateway
+spec:
+  type: NodePort
+  selector:
+    app: gateway
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+    protocol: TCP
+    name: http
+
+---
+# HorizontalPodAutoscaler pour API Gateway
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway-hpa
+  namespace: banking-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

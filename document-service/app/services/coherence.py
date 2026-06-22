@@ -1,5 +1,4 @@
 from difflib import SequenceMatcher
-from datetime import date
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,57 +12,42 @@ class CoherenceService:
     """
 
     # Seuils de similarité (ajustables selon la qualité des scans)
-    SEUIL_NOM = 0.75      # 75% de similarité minimum pour le nom
-    SEUIL_PRENOM = 0.70   # un peu plus souple (prénoms composés, accents)
+    SEUIL_NOM = 0.75    # 75% de similarité minimum pour le nom
+    SEUIL_PRENOM = 0.70 # un peu plus souple (prénoms composés, accents)
 
     def verifier(
         self,
         ocr_nom: str | None,
         ocr_prenom: str | None,
-        ocr_date: date | None,
         client_nom: str,
         client_prenom: str,
-        client_date: date
     ) -> tuple[bool, str]:
 
         erreurs = []
 
-        # ── Vérification du nom ────────────────────────────────────
+        # ── Vérification du nom ────────────────────────────────────────────────
         if ocr_nom:
             ratio = self._similarite(ocr_nom, client_nom)
-            logger.debug(f"Similarité nom : '{ocr_nom}' vs '{client_nom}' = {ratio:.2f}")
             if ratio < self.SEUIL_NOM:
                 erreurs.append(
                     f"Nom OCR '{ocr_nom}' ≠ nom saisi '{client_nom}' "
                     f"(similarité: {ratio:.0%})"
                 )
         else:
-            # OCR n'a pas trouvé de nom — on le note mais pas bloquant seul
-            logger.warning("OCR : nom non extrait du document")
+            erreurs.append("Nom non extrait du document — vérification impossible")
 
-        # ── Vérification du prénom ─────────────────────────────────
+        # ── Vérification du prénom ─────────────────────────────────────────────
         if ocr_prenom:
-            ratio = self._similarite(ocr_prenom, client_prenom)
-            logger.debug(f"Similarité prénom : '{ocr_prenom}' vs '{client_prenom}' = {ratio:.2f}")
+            ratio = self._similarite_prenom(ocr_prenom, client_prenom)
             if ratio < self.SEUIL_PRENOM:
                 erreurs.append(
                     f"Prénom OCR '{ocr_prenom}' ≠ prénom saisi '{client_prenom}' "
                     f"(similarité: {ratio:.0%})"
                 )
         else:
-            logger.warning("OCR : prénom non extrait du document")
+            erreurs.append("Prénom non extrait du document — vérification impossible")
 
-        # ── Vérification de la date de naissance ──────────────────
-        if ocr_date:
-            if ocr_date != client_date:
-                erreurs.append(
-                    f"Date naissance OCR {ocr_date.isoformat()} "
-                    f"≠ date saisie {client_date.isoformat()}"
-                )
-        else:
-            logger.warning("OCR : date de naissance non extraite")
-
-        # ── Résultat final ─────────────────────────────────────────
+        # ── Résultat final ─────────────────────────────────────────────────────
         if erreurs:
             commentaire = " | ".join(erreurs)
             logger.info(f"Dossier INCOHERENT : {commentaire}")
@@ -72,11 +56,39 @@ class CoherenceService:
         logger.info("Dossier COHERENT : toutes les données correspondent")
         return True, "Données cohérentes avec les informations saisies"
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
     def _similarite(self, a: str, b: str) -> float:
         """Similarité insensible à la casse et aux espaces superflus."""
-        a_clean = a.upper().strip()
-        b_clean = b.upper().strip()
-        return SequenceMatcher(None, a_clean, b_clean).ratio()
+        return SequenceMatcher(None, a.upper().strip(), b.upper().strip()).ratio()
+
+    def _similarite_prenom(self, ocr: str, saisi: str) -> float:
+        """Similarité pour les prénoms avec deux niveaux de tolérance :
+        1. Ratio classique (comme pour le nom)
+        2. Inclusion partielle : si l'OCR n'a capturé qu'un prénom sur plusieurs
+           (ex: OCR='HANDY' vs saisi='HANDY ROCHINEL'), on vérifie si chaque mot
+           OCR se retrouve dans le prénom saisi avec un bon ratio individuel.
+           Evite les rejets injustes sur les prénoms composés longs."""
+        ocr_clean = ocr.upper().strip()
+        saisi_clean = saisi.upper().strip()
+
+        ratio_global = SequenceMatcher(None, ocr_clean, saisi_clean).ratio()
+        if ratio_global >= self.SEUIL_PRENOM:
+            return ratio_global
+
+        # Vérifie si tous les mots OCR matchent un mot du prénom saisi
+        mots_ocr = ocr_clean.split()
+        mots_saisi = saisi_clean.split()
+        if mots_ocr and all(
+            any(
+                SequenceMatcher(None, mot_ocr, mot_saisi).ratio() >= self.SEUIL_PRENOM
+                for mot_saisi in mots_saisi
+            )
+            for mot_ocr in mots_ocr
+        ):
+            return self.SEUIL_PRENOM  # on retourne exactement le seuil -> passe
+
+        return ratio_global
 
 
 coherence_service = CoherenceService()

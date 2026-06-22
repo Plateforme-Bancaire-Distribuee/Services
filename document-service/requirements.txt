@@ -3,26 +3,29 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 
 # ORM + driver PostgreSQL async
-sqlalchemy==2.0.30
-asyncpg==0.29.0
+sqlalchemy==2.0.50
+asyncpg==0.30.0
 alembic==1.13.1
 
 # Config depuis .env
 pydantic-settings==2.2.1
-pydantic==2.7.1
+pydantic==2.9.0
 
 # OCR
-easyocr==1.7.1
-Pillow==10.3.0
+pytesseract==0.3.13
+Pillow==10.4.0
 
 # Stockage objet (MinIO)
 minio==7.2.7
 
 # Kafka async
-aiokafka==0.10.0
+aiokafka==0.11.0
 
 # JWT (validation du token émis par customer-service)
 python-jose[cryptography]==3.3.0
 
-# HTTP client (appels vers d'autres services si besoin)
+# HTTP client
 httpx==0.27.0
+
+#Eureka client
+py-eureka-client==0.11.13

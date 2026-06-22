@@ -1,0 +1,134 @@
+---
+# ConfigMap pour Service Loan
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-service-config
+  namespace: banking-system
+data:
+  application.properties: |
+    spring.application.name=service-loan
+    server.port=8084
+    
+    spring.datasource.url=jdbc:postgresql://postgres-services:5432/loan_db
+    spring.datasource.username=postgres
+    spring.datasource.password=postgres
+    spring.datasource.driver-class-name=org.postgresql.Driver
+    
+    spring.jpa.hibernate.ddl-auto=update
+    spring.jpa.show-sql=false
+    spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+    
+    spring.kafka.bootstrap-servers=kafka:9092
+    spring.kafka.consumer.group-id=loan-service-group
+    
+    eureka.client.service-url.defaultZone=http://service-registry:8761/eureka/
+    eureka.instance.prefer-ip-address=true
+    
+    account.service.url=http://service-account:8082
+    ai.service.url=http://service-document:8082
+    
+    management.endpoints.web.exposure.include=*
+
+---
+# Deployment Service Loan
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-loan
+  namespace: banking-system
+  labels:
+    app: service-loan
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: service-loan
+  template:
+    metadata:
+      labels:
+        app: service-loan
+        version: v1
+    spec:
+      containers:
+      - name: service-loan
+        image: service-loan:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8084
+          name: http
+          protocol: TCP
+        env:
+        - name: SPRING_CONFIG_LOCATION
+          value: "file:/etc/config/application.properties"
+        - name: JAVA_OPTS
+          value: "-Xms256m -Xmx512m"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8084
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8084
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: loan-service-config
+
+---
+# Service Loan Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-loan
+  namespace: banking-system
+  labels:
+    app: service-loan
+spec:
+  type: ClusterIP
+  selector:
+    app: service-loan
+  ports:
+  - port: 8084
+    targetPort: 8084
+    protocol: TCP
+    name: http
+
+---
+# HorizontalPodAutoscaler pour Service Loan
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: loan-service-hpa
+  namespace: banking-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: service-loan
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

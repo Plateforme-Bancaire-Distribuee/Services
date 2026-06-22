@@ -1,0 +1,110 @@
+---
+# Ingress pour accéder aux services
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: banking-ingress
+  namespace: banking-system
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  rules:
+  - host: api.banking.local
+    http:
+      paths:
+      - path: /customers
+        pathType: Prefix
+        backend:
+          service:
+            name: customer-service
+            port:
+              number: 8081
+      - path: /accounts
+        pathType: Prefix
+        backend:
+          service:
+            name: service-account
+            port:
+              number: 8082
+      - path: /transactions
+        pathType: Prefix
+        backend:
+          service:
+            name: service-transaction
+            port:
+              number: 8083
+      - path: /loans
+        pathType: Prefix
+        backend:
+          service:
+            name: service-loan
+            port:
+              number: 8084
+      - path: /documents
+        pathType: Prefix
+        backend:
+          service:
+            name: service-document
+            port:
+              number: 8082
+      - path: /notifications
+        pathType: Prefix
+        backend:
+          service:
+            name: service-notification
+            port:
+              number: 8085
+      - path: /eureka
+        pathType: Prefix
+        backend:
+          service:
+            name: service-registry
+            port:
+              number: 8761
+      - path: /minio
+        pathType: Prefix
+        backend:
+          service:
+            name: minio-console
+            port:
+              number: 9001
+      - path: /kafka
+        pathType: Prefix
+        backend:
+          service:
+            name: kafka-ui
+            port:
+              number: 8080
+
+---
+# NetworkPolicy pour isoler les services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: banking-network-policy
+  namespace: banking-system
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: banking-system
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: banking-system
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+  - ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53

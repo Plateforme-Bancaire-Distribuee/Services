@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -16,7 +17,14 @@ class Settings(BaseSettings):
 
     # JWT — doit être le MÊME secret que dans customer-service
     jwt_secret: str = "4a8f2e1b9d3c7f5a6e2d8b4c1f9e3a7d2b5c8f4e1a6d9b3c7f2e5a8d1b4c9f3e"
-    jwt_algorithm: str = "HS256"
+    jwt_algorithm: str = "HS512"
+    jwt_algorithms: list[str] = ["HS512"]
+
+    @field_validator("jwt_algorithms", mode="before")
+    def split_jwt_algorithms(cls, value):
+        if isinstance(value, str):
+            return [alg.strip() for alg in value.split(",") if alg.strip()]
+        return value
 
     # Eureka (optionnel pour dev local)
     eureka_url: str = "http://localhost:8761/eureka"

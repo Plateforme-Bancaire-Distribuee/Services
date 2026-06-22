@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_role
+from app.core.security import get_current_user
 from app.kafka.producer import publish_kyc_processed
 from app.models.document import DocumentKYC
 from app.schemas.document import DocumentDetailResponse, DocumentResponse, OcrTriggerRequest, OcrResponse
@@ -22,6 +22,14 @@ router = APIRouter(prefix="/api/v1/documents", tags=["Documents KYC"])
 # Types MIME acceptés
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.get("/upload", include_in_schema=False)
+async def upload_document_method_not_allowed():
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail="Use POST /api/v1/documents/upload with multipart/form-data to upload a document."
+    )
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)

@@ -1,10 +1,12 @@
 package com.banking.customer_service.service;
 
+import com.banking.customer_service.dto.request.AccountRequest;
 import com.banking.customer_service.dto.request.UpdateProfileRequest;
 import com.banking.customer_service.dto.response.CustomerResponse;
 import com.banking.customer_service.entity.*;
 import com.banking.customer_service.enums.StatutClient;
 import com.banking.customer_service.exception.CustomerNotFoundException;
+import com.banking.customer_service.feignClients.AccountClient;
 import com.banking.customer_service.kafka.CustomerEventPublisher;
 import com.banking.customer_service.repository.ClientRepository;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +15,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -20,6 +24,7 @@ public class CustomerService {
 
     private final ClientRepository clientRepository;
     private final CustomerEventPublisher eventPublisher;
+    private final AccountClient accountClient;
 
     public CustomerResponse getProfile(User currentUser) {
         var client = clientRepository.findByUserIdWithDetails(currentUser.getId())
@@ -80,5 +85,14 @@ public class CustomerService {
 
         eventPublisher.publishCustomerStatusChanged(client, ancienStatut, raison);
         log.info("Client {} clôturé.", client.getNumeroClient());
+    }
+
+    public Client getCustomerById(Long clientId) {
+        var client = clientRepository.findById(clientId).orElseThrow(() -> new CustomerNotFoundException("Client " + clientId + " introuvable"));
+        return client;
+    }
+
+    public List<AccountRequest> getCustomerAccounts(Long clientId) {
+        return accountClient.getAccountsByClientId(clientId);
     }
 }

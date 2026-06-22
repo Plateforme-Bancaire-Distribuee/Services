@@ -1,41 +1,130 @@
 version: '3.8'
 
-services:
+# Configuration Docker Compose pour développement local
+# Utilisation: docker-compose up -d
 
-  postgres:
+services:
+  # ========== INFRASTRUCTURE ==========
+  
+  # PostgreSQL pour Customer Service
+  postgres-customer:
     image: postgres:16-alpine
-    container_name: customer-postgres
+    container_name: banking-postgres-customer
     environment:
       POSTGRES_DB: customer_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5435:5432"
+      - "5437:5432"
     volumes:
-      - customer_pg_data:/var/lib/postgresql/data
+      - postgres_customer_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - banking-network
 
-  postgres-document:
+  # PostgreSQL pour autres services
+  postgres-services:
     image: postgres:16-alpine
-    container_name: document-postgres
+    container_name: banking-postgres-services
     environment:
-      POSTGRES_DB: document_db
+      POSTGRES_DB: postgres
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=256MB -c max_connections=200"
     ports:
-      - "5434:5432"
+      - "5432:5432"
     volumes:
-      - document_pg_data:/var/lib/postgresql/data
+      - postgres_services_data:/var/lib/postgresql/data
+      - ./init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - banking-network
 
+  # MongoDB pour Notification Service
+  mongodb:
+    image: mongo:7.0
+    container_name: banking-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+
+  # Zookeeper
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: banking-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: banking-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server=localhost:9092 | grep -q ApiVersion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka UI
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: banking-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - banking-network
+
+  # MinIO (S3 compatible)
   minio:
     image: minio/minio:latest
     container_name: banking-minio
@@ -48,46 +137,323 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio_data:/data
+    networks:
+      - banking-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    container_name: customer-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
+  # ========== SERVICES DE BASE (INFRASTRUCTURE) ==========
+  
+  # Config Server (Centralized Configuration)
+  config-server:
+    image: config-server:1.0.0
+    build:
+      context: ./infra/config-server
+      dockerfile: Dockerfile
+    container_name: banking-config-server
     ports:
-      - "2181:2181"
+      - "8888:8888"
+    environment:
+      SPRING_APPLICATION_NAME: config-server
+      SERVER_PORT: 8888
+      SPRING_CLOUD_CONFIG_SERVER_GIT_URI: https://github.com/Plateforme-Bancaire-Distribuee/config-repo.git
+      SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL: main
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka
+      JAVA_OPTS: -Xms256m -Xmx512m
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
-  kafka:
-    image: confluentinc/cp-kafka:7.6.0
-    container_name: customer-kafka
-    depends_on:
-      - zookeeper
+  # Eureka Server (Service Registry)
+  eureka-server:
+    image: eureka-server:1.0.0
+    container_name: banking-eureka
+    build:
+      context: ./eureka-server
+      dockerfile: Dockerfile
     ports:
-      - "9092:9092"
+      - "8761:8761"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      SPRING_APPLICATION_NAME: eureka-server
+      SERVER_PORT: 8761
+    networks:
+      - banking-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8761/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: customer-kafka-ui
-    depends_on:
-      - kafka
+  # ========== API GATEWAY ==========
+  
+  # API Gateway (Entrée unique)
+  gateway:
+    image: gateway:1.0.0
+    build:
+      context: ./infra/gateway
+      dockerfile: Dockerfile
+    container_name: banking-gateway
     ports:
-      - "8090:8080"
+      - "8080:8080"
     environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      SPRING_APPLICATION_NAME: gateway
+      SERVER_PORT: 8080
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka
+      JAVA_OPTS: -Xms512m -Xmx1024m
+    depends_on:
+      config-server:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ========== MICROSERVICES ==========
+  
+  # Customer Service
+  customer-service:
+    image: customer-service:1.0.0
+    build:
+      context: ./customer-service
+      dockerfile: Dockerfile
+    container_name: banking-customer-service
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_APPLICATION_NAME: customer-service
+      SERVER_PORT: 8081
+      CONFIG_SERVER_URL: http://config-server:8888
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-customer:5432/customer_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka
+      ACCOUNT_SERVICE_URL: http://service-account:8082
+      DOCUMENT_SERVICE_URL: http://service-document:8082
+      JAVA_OPTS: -Xms256m -Xmx512m
+    depends_on:
+      postgres-customer:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Account Service
+  service-account:
+    image: service-account:1.0.0
+    build:
+      context: ./service-account
+      dockerfile: Dockerfile
+    container_name: banking-account-service
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_APPLICATION_NAME: service-account
+      SERVER_PORT: 8082
+      CONFIG_SERVER_URL: http://config-server:8888
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-services:5432/account_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka
+      JAVA_OPTS: -Xms256m -Xmx512m
+    depends_on:
+      postgres-services:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Transaction Service
+  service-transaction:
+    image: service-transaction:1.0.0
+    build:
+      context: ./service-transaction
+      dockerfile: Dockerfile
+    container_name: banking-transaction-service
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_APPLICATION_NAME: service-transaction
+      SERVER_PORT: 8083
+      CONFIG_SERVER_URL: http://config-server:8888
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-services:5432/transaction_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka
+      ACCOUNT_SERVICE_URL: http://service-account:8082
+      JAVA_OPTS: -Xms256m -Xmx512m
+    depends_on:
+      postgres-services:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Loan Service
+  service-loan:
+    image: service-loan:1.0.0
+    build:
+      context: ./service-loan
+      dockerfile: Dockerfile
+    container_name: banking-loan-service
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_APPLICATION_NAME: service-loan
+      SERVER_PORT: 8084
+      CONFIG_SERVER_URL: http://config-server:8888
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-services:5432/loan_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka
+      ACCOUNT_SERVICE_URL: http://service-account:8082
+      AI_SERVICE_URL: http://service-document:8082
+      JAVA_OPTS: -Xms256m -Xmx512m
+    depends_on:
+      postgres-services:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Document Service
+  service-document:
+    image: service-document:1.0.0
+    build:
+      context: ./document-service
+      dockerfile: app/Dockerfile
+    container_name: banking-document-service
+    ports:
+      - "8085:8082"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres-services:5432/document_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_URL: http://minio:9000
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      EUREKA_URL: http://eureka-server:8761/eureka
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres-services:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Notification Service
+  service-notification:
+    image: service-notification:1.0.0
+    build:
+      context: ./service-notification
+      dockerfile: Dockerfile
+    container_name: banking-notification-service
+    ports:
+      - "8086:8085"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MONGODB_URL: mongodb://admin:admin123@mongodb:27017
+      EUREKA_URL: http://eureka-server:8761/eureka
+      LOG_LEVEL: INFO
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+    restart: unless-stopped
 
 volumes:
-  customer_pg_data:
-  document_pg_data:
+  postgres_customer_data:
+    driver: local
+  postgres_services_data:
+    driver: local
+  mongodb_data:
+    driver: local
   minio_data:
+    driver: local
+
+networks:
+  banking-network:
+    driver: bridge

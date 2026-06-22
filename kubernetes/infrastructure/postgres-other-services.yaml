@@ -1,0 +1,147 @@
+---
+# ConfigMap pour PostgreSQL Account/Loan/Transaction
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-services-config
+  namespace: banking-system
+data:
+  POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+
+---
+# Secret pour PostgreSQL Services
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-services-secret
+  namespace: banking-system
+type: Opaque
+stringData:
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+
+---
+# PersistentVolumeClaim pour PostgreSQL Services
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-services-pvc
+  namespace: banking-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+
+---
+# Deployment PostgreSQL pour Account, Loan, Transaction
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-services
+  namespace: banking-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-services
+  template:
+    metadata:
+      labels:
+        app: postgres-services
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-services-secret
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-services-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_INITDB_ARGS
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-services-config
+              key: POSTGRES_INITDB_ARGS
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres
+        # Initialisation des bases de données
+        volumeMounts:
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-services-pvc
+      - name: init-scripts
+        configMap:
+          name: postgres-init-scripts
+
+---
+# ConfigMap pour les scripts d'initialisation des bases de données
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: banking-system
+data:
+  01-init-databases.sql: |
+    CREATE DATABASE account_db;
+    CREATE DATABASE loan_db;
+    CREATE DATABASE transaction_db;
+    CREATE DATABASE document_db;
+
+---
+# Service PostgreSQL Services
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-services
+  namespace: banking-system
+  labels:
+    app: postgres-services
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres-services
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+    name: postgres

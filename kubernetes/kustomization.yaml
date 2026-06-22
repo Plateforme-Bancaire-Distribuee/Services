@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: banking-system
+
+resources:
+  # Namespaces
+  - namespaces/namespace.yaml
+  
+  # Infrastructure & Central Services
+  - infrastructure/config-server.yaml
+  - infrastructure/eureka-server.yaml
+  - infrastructure/gateway.yaml
+  - infrastructure/postgres-customer.yaml
+  - infrastructure/postgres-other-services.yaml
+  - infrastructure/kafka-zookeeper.yaml
+  - infrastructure/minio.yaml
+  - infrastructure/ingress-network.yaml
+  
+  # Microservices
+  - services/customer-service.yaml
+  - services/service-account.yaml
+  - services/service-transaction.yaml
+  - services/service-loan.yaml
+  - services/service-document.yaml
+  - services/service-notification.yaml
+
+images:
+  - name: config-server
+    newTag: "1.0.0"
+  - name: eureka-server
+    newTag: "1.0.0"
+  - name: gateway
+    newTag: "1.0.0"
+  - name: customer-service
+    newTag: "1.0.0"
+  - name: service-account
+    newTag: "1.0.0"
+  - name: service-transaction
+    newTag: "1.0.0"
+  - name: service-loan
+    newTag: "1.0.0"
+  - name: service-document
+    newTag: "1.0.0"
+  - name: service-notification
+    newTag: "1.0.0"
+
+commonLabels:
+  app.kubernetes.io/part-of: banking-system
+  app.kubernetes.io/managed-by: kustomize
+
+commonAnnotations:
+  description: "Banking System Microservices"
+  owner: "Banking Team"

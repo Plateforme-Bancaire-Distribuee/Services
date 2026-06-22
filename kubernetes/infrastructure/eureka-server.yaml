@@ -1,0 +1,122 @@
+---
+# ConfigMap pour Eureka Server
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eureka-config
+  namespace: banking-system
+data:
+  application.yaml: |
+    server:
+      port: 8761
+    
+    spring:
+      application:
+        name: eureka-server
+    
+    eureka:
+      instance:
+        hostname: service-registry
+        prefer-ip-address: true
+      client:
+        register-with-eureka: false
+        fetch-registry: false
+
+---
+# Deployment Eureka Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-registry
+  namespace: banking-system
+  labels:
+    app: service-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-registry
+  template:
+    metadata:
+      labels:
+        app: service-registry
+    spec:
+      containers:
+      - name: eureka
+        image: eureka-server:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8761
+          name: http
+          protocol: TCP
+        env:
+        - name: SPRING_CONFIG_LOCATION
+          value: "file:/etc/config/application.yaml"
+        - name: JAVA_OPTS
+          value: "-Xms256m -Xmx512m"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8761
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8761
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: eureka-config
+
+---
+# Service Eureka Server
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-registry
+  namespace: banking-system
+  labels:
+    app: service-registry
+spec:
+  type: ClusterIP
+  selector:
+    app: service-registry
+  ports:
+  - port: 8761
+    targetPort: 8761
+    protocol: TCP
+    name: http
+
+---
+# Service Eureka Server (NodePort for external access)
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-registry-nodeport
+  namespace: banking-system
+  labels:
+    app: service-registry
+spec:
+  type: NodePort
+  selector:
+    app: service-registry
+  ports:
+  - port: 8761
+    targetPort: 8761
+    nodePort: 30761
+    protocol: TCP
+    name: http

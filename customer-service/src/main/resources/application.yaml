@@ -6,17 +6,17 @@ spring:
     name: customer-service
 
   config:
-    import: optional:configserver:http://localhost:8888
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
 
   datasource:
-    url: jdbc:postgresql://localhost:5435/customer_db
+    url: jdbc:postgresql://localhost:5437/customer_db
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: create-drop
     show-sql: true
     properties:
       hibernate:
@@ -36,6 +36,8 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: java.util.HashMap
         spring.json.trusted.packages: "*"
 
 eureka:
@@ -53,10 +55,12 @@ jwt:
   expiration: 900000        # 15 minutes (ms)
   refresh-expiration: 604800000  # 7 jours (ms)
 
-# Feign : document-service
+# Feign : services
 services:
+  account-service:
+    url: ${ACCOUNT_SERVICE_URL:http://service-account:8082}
   document-service:
-    url: ${DOCUMENT_SERVICE_URL:http://localhost:8082}
+    url: ${DOCUMENT_SERVICE_URL:http://service-document:8082}
 
 # Actuator
 management:
@@ -80,3 +84,7 @@ logging:
   level:
     com.banking.customer: DEBUG
     org.springframework.security: INFO
+
+#account
+#  service
+#    url=192.168.43.194:8082

@@ -1,0 +1,223 @@
+---
+# ConfigMap pour Service Notification
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification-service-config
+  namespace: banking-system
+data:
+  config.yaml: |
+    app:
+      name: service-notification
+      version: 1.0.0
+      environment: kubernetes
+    
+    kafka:
+      bootstrap_servers: kafka:9092
+      group_id: notification-service-group
+      topics:
+        - notifications
+        - customer-events
+        - transaction-events
+    
+    database:
+      url: mongodb://mongodb:27017
+      name: notifications_db
+    
+    eureka:
+      server_url: http://service-registry:8761/eureka
+      instance_name: service-notification
+      port: 8085
+    
+    logging:
+      level: INFO
+
+---
+# Secret pour MongoDB
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+  namespace: banking-system
+type: Opaque
+stringData:
+  MONGO_INITDB_ROOT_USERNAME: admin
+  MONGO_INITDB_ROOT_PASSWORD: admin123
+
+---
+# PersistentVolumeClaim pour MongoDB
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-pvc
+  namespace: banking-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+
+---
+# Deployment MongoDB pour Notification
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb-notification
+  namespace: banking-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb-notification
+  template:
+    metadata:
+      labels:
+        app: mongodb-notification
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:7.0
+        ports:
+        - containerPort: 27017
+          name: mongodb
+        envFrom:
+        - secretRef:
+            name: mongodb-secret
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: mongodb-storage
+          mountPath: /data/db
+      volumes:
+      - name: mongodb-storage
+        persistentVolumeClaim:
+          claimName: mongodb-pvc
+
+---
+# Service MongoDB
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: banking-system
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb-notification
+  ports:
+  - port: 27017
+    targetPort: 27017
+    protocol: TCP
+    name: mongodb
+
+---
+# Deployment Service Notification
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-notification
+  namespace: banking-system
+  labels:
+    app: service-notification
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: service-notification
+  template:
+    metadata:
+      labels:
+        app: service-notification
+        version: v1
+    spec:
+      containers:
+      - name: service-notification
+        image: service-notification:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8085
+          name: http
+          protocol: TCP
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: MONGODB_URL
+          value: "mongodb://admin:admin123@mongodb:27017"
+        - name: EUREKA_URL
+          value: "http://service-registry:8761/eureka"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8085
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8085
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: notification-service-config
+
+---
+# Service Notification Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-notification
+  namespace: banking-system
+  labels:
+    app: service-notification
+spec:
+  type: ClusterIP
+  selector:
+    app: service-notification
+  ports:
+  - port: 8085
+    targetPort: 8085
+    protocol: TCP
+    name: http
+
+---
+# HorizontalPodAutoscaler pour Service Notification
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notification-service-hpa
+  namespace: banking-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: service-notification
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

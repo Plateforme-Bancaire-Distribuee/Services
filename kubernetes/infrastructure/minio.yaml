@@ -1,0 +1,125 @@
+---
+# Secret pour MinIO
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-secret
+  namespace: banking-system
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: minioadmin
+  MINIO_ROOT_PASSWORD: minioadmin
+
+---
+# PersistentVolumeClaim pour MinIO
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-pvc
+  namespace: banking-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+
+---
+# Deployment MinIO
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: banking-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        command:
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        envFrom:
+        - secretRef:
+            name: minio-secret
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: minio-storage
+          mountPath: /data
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: minio-storage
+        persistentVolumeClaim:
+          claimName: minio-pvc
+
+---
+# Service MinIO API
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: banking-system
+  labels:
+    app: minio
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+  - port: 9000
+    targetPort: 9000
+    protocol: TCP
+    name: api
+
+---
+# Service MinIO Console
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: banking-system
+  labels:
+    app: minio-console
+spec:
+  type: NodePort
+  selector:
+    app: minio
+  ports:
+  - port: 9001
+    targetPort: 9001
+    nodePort: 30001
+    protocol: TCP
+    name: console

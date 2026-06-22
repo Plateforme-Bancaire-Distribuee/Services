@@ -1,0 +1,28 @@
+server:
+  port: 8761
+
+spring:
+  application:
+    name: eureka-server
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    # Eureka ne s'enregistre pas lui-même
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    # Désactiver self-preservation en développement
+    enable-self-preservation: false
+    eviction-interval-timer-in-ms: 5000
+    # Attendre avant de retirer un service mort
+    response-cache-update-interval-ms: 3000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

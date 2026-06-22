@@ -1,0 +1,384 @@
+# ============================================================
+#  API GATEWAY — Spring Cloud Gateway
+#  Point d'entrée unique de toute la plateforme bancaire.
+#  Tout le trafic client passe ici avant d'atteindre
+#  un microservice. Aucun service n'est exposé directement.
+# ============================================================
+
+server:
+  # Port d'écoute du gateway.
+  port: 8080
+
+spring:
+  application:
+    # Nom utilisé pour s'enregistrer dans Eureka et dans
+    # les logs distribués (Jaeger, ELK).
+    name: gateway
+
+  config:
+    # Le gateway charge sa configuration depuis le Config Server
+    # centralisé (Spring Cloud Config). La variable CONFIG_SERVER_URL
+    # est injectée par Kubernetes via un ConfigMap.
+    # "optional:" signifie : si le Config Server est indisponible
+    # au démarrage, on continue avec les valeurs locales de ce fichier.
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+
+  # ──────────────────────────────────────────────────────────
+  #  SPRING CLOUD GATEWAY — configuration principale
+  # ──────────────────────────────────────────────────────────
+  cloud:
+    gateway:
+
+      # ── Découverte automatique des services ───────────────
+      # Le gateway interroge Eureka pour connaître les adresses
+      # des microservices. On n'a jamais besoin de coder une IP
+      # ou un port en dur : Eureka les fournit dynamiquement.
+      discovery:
+        locator:
+          enabled: true
+          # Force les noms de services en minuscules.
+          # Ex : "CUSTOMER-SERVICE" dans Eureka devient
+          # accessible via "lb://customer-service"
+          lower-case-service-id: true
+
+      # ── Timeouts globaux ──────────────────────────────────
+      # Appliqués à toutes les routes sauf surcharge locale.
+      httpclient:
+        # Temps max pour établir la connexion TCP avec le service cible.
+        # Au-delà de 3s, on considère le service injoignable.
+        connect-timeout: 3000
+
+        # Temps max pour recevoir la réponse complète.
+        # Au-delà de 10s, le gateway renvoie une erreur 504
+        # au client plutôt que de le laisser attendre indéfiniment.
+        response-timeout: 10s
+
+      # ── Filtres appliqués à TOUTES les routes ────────────
+      # Ces filtres s'exécutent avant les filtres spécifiques
+      # de chaque route.
+      default-filters:
+
+        # Supprime les doublons des headers CORS.
+        # Sans ce filtre, si le gateway ET le microservice
+        # ajoutent tous les deux "Access-Control-Allow-Origin",
+        # le navigateur rejette la réponse (header dupliqué).
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+
+        # Limiteur de débit (Rate Limiting) basé sur Redis.
+        # Protège la plateforme contre les abus et attaques DDoS.
+        - name: RequestRateLimiter
+          args:
+            # Chaque adresse IP a droit à 100 requêtes/seconde
+            # en régime normal (le "seau" se remplit à ce rythme).
+            redis-rate-limiter.replenishRate: 100
+
+            # En cas de pic de trafic, une IP peut envoyer jusqu'à
+            # 200 requêtes d'un coup (taille maximale du "seau").
+            # Au-delà, les requêtes reçoivent un 429 Too Many Requests.
+            redis-rate-limiter.burstCapacity: 200
+
+            # Le comptage se fait par adresse IP du client.
+            # Bean défini dans la classe GatewayConfig.java
+            key-resolver: "#{@ipKeyResolver}"
+
+      # ══════════════════════════════════════════════════════
+      #  ROUTES — règles de routage par microservice
+      #  Chaque route = un microservice de la plateforme.
+      #  Ordre de traitement : du haut vers le bas.
+      #  La première route dont le prédicat correspond gagne.
+      # ══════════════════════════════════════════════════════
+      routes:
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  CUSTOMER SERVICE — gestion des clients & KYC   ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: customer-service
+
+          # lb:// = Load Balanced. Le gateway demande à Eureka
+          # toutes les instances disponibles de "customer-service"
+          # et répartit les requêtes entre elles (round-robin par défaut).
+          uri: lb://customer-service
+
+          predicates:
+            # Cette route s'active uniquement si l'URL du client
+            # commence par /api/v1/customers/
+            # Ex : GET /api/v1/customers/123 → routé ici
+            - Path=/api/v1/customers/**
+
+          filters:
+            # Vérification du JWT.
+            # Filtre personnalisé qui lit le header Authorization,
+            # valide la signature du token, vérifie son expiration
+            # et extrait les claims (userId, roles, operateurId).
+            # Si le token est absent ou invalide → 401 Unauthorized.
+            # Le microservice n'a jamais à gérer cette vérification.
+            - name: AuthenticationFilter
+
+            # Circuit Breaker (pattern de résilience).
+            # Si le Customer Service répond avec trop d'erreurs
+            # (paramétré dans resilience4j ci-dessous), le circuit
+            # s'ouvre : les requêtes suivantes sont redirigées
+            # immédiatement vers le fallback sans essayer de joindre
+            # le service en panne. Évite l'effet cascade.
+            - name: CircuitBreaker
+              args:
+                name: customerCB
+                # URL appelée quand le circuit est ouvert.
+                # Renvoie un message d'erreur structuré au client.
+                fallbackUri: forward:/fallback/customer
+
+            # Retry automatique.
+            # En cas d'erreur réseau transitoire (ex: pod Kubernetes
+            # en cours de redémarrage), le gateway réessaie
+            # automatiquement avant de déclarer l'échec.
+            - name: Retry
+              args:
+                # Nombre maximum de tentatives après l'échec initial.
+                retries: 3
+                # On ne réessaie que pour ces codes HTTP
+                # (erreurs serveur/réseau, pas les erreurs client 4xx).
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+                backoff:
+                  # Délai avant la 1ère relance.
+                  firstBackoff: 100ms
+                  # Délai maximum entre deux relances.
+                  maxBackoff: 2s
+                  # Chaque relance double le délai (backoff exponentiel) :
+                  # tentative 1 → 100ms
+                  # tentative 2 → 200ms
+                  # tentative 3 → 400ms (plafonné à 2s)
+                  factor: 2
+
+            # Réécriture de l'URL (transparente ici).
+            # Permet de transformer l'URL publique en URL interne
+            # si elles diffèrent. Ici le chemin reste identique.
+            - RewritePath=/api/v1/customers/(?<segment>.*), /api/v1/customers/${segment}
+
+            # Headers ajoutés à chaque requête transmise.
+            # Prouve au microservice que la requête vient bien
+            # du gateway officiel et non d'un appel direct suspect.
+            - AddRequestHeader=X-Gateway-Source, banking-gateway
+
+            # Identifiant unique de requête (corrélation ID).
+            # Généré ici et propagé à travers tous les microservices.
+            # Permet de reconstituer le parcours complet d'une
+            # requête dans Jaeger (tracing distribué) et dans ELK.
+            # Ex : client → gateway → customer-service → kafka
+            #      → tous les logs portent ce même UUID.
+            - AddRequestHeader=X-Request-Id, ${T(java.util.UUID).randomUUID().toString()}
+
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  ACCOUNT SERVICE — comptes, soldes, mouvements   ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: account-service
+          uri: lb://account-service
+          predicates:
+            - Path=/api/v1/accounts/**
+          filters:
+            - name: AuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: accountCB
+                fallbackUri: forward:/fallback/account
+            # Pas de Retry ici : une opération de débit/crédit
+            # ne doit pas être rejouée automatiquement sans
+            # contrôle d'idempotence. L'idempotency key gère ça
+            # au niveau applicatif (dans Account Service lui-même).
+
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  TRANSFER SERVICE — transferts & saga pattern    ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: transaction-service
+          uri: lb://transaction-service
+          predicates:
+            - Path=/api/v1/transactions/**
+          filters:
+            - name: AuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: transactionCB
+                fallbackUri: forward:/fallback/transaction
+            # Circuit breaker plus strict que les autres
+            # (voir resilience4j.transactionCB ci-dessous).
+            # Un transfert financier raté vaut mieux qu'un
+            # transfert dupliqué ou incohérent.
+
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  LOAN SERVICE — prêts, dossiers, échéanciers    ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: loan-service
+          uri: lb://loan-service
+          predicates:
+            - Path=/api/v1/loans/**
+          filters:
+            - name: AuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: loanCB
+                fallbackUri: forward:/fallback/loan
+
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  AUTH / IAM SERVICE — authentification & tokens ║
+        # ║  ⚠ ROUTE PUBLIQUE — pas d'AuthenticationFilter  ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: iam-service
+          uri: lb://iam-service
+          predicates:
+            - Path=/api/v1/auth/**
+          filters:
+            # PAS d'AuthenticationFilter ici.
+            # C'est ce service qui ÉMET les tokens JWT.
+            # Lui demander un token valide pour y accéder
+            # créerait une dépendance circulaire : personne
+            # ne pourrait jamais se connecter.
+            # C'est la seule route accessible sans être authentifié.
+            - name: CircuitBreaker
+              args:
+                name: iamCB
+                fallbackUri: forward:/fallback/auth
+
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  NOTIFICATION SERVICE — push, email, SMS        ║
+        # ║  Développé en Node.js / NestJS                  ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - name: AuthenticationFilter
+            # Pas de circuit breaker bloquant ici :
+            # une notification ratée n'est pas critique.
+            # Le service Kafka rejoue les événements manqués.
+
+
+        # ╔══════════════════════════════════════════════════╗
+        # ║  FALLBACK — réponse d'urgence générique         ║
+        # ╚══════════════════════════════════════════════════╝
+        - id: fallback
+          # no://op = route interne qui ne transfère nulle part.
+          # Le fallback controller local gère la réponse.
+          uri: no://op
+          predicates:
+            - Path=/fallback/**
+          # Renvoie un JSON structuré avec le code d'erreur,
+          # le message et un identifiant pour le support.
+
+
+  # ──────────────────────────────────────────────────────────
+  #  REDIS — requis par le rate limiter
+  #  Redis stocke les compteurs de requêtes par IP.
+  #  Les variables d'environnement sont injectées
+  #  par Kubernetes (Secret / ConfigMap).
+  # ──────────────────────────────────────────────────────────
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+
+
+# ════════════════════════════════════════════════════════════
+#  RESILIENCE4J — configuration des Circuit Breakers
+#
+#  Un circuit breaker a 3 états :
+#  CLOSED  → trafic normal, on comptabilise les erreurs
+#  OPEN    → trop d'erreurs, on court-circuite vers fallback
+#  HALF-OPEN → période de test : quelques requêtes passent
+#              pour voir si le service est rétabli
+# ════════════════════════════════════════════════════════════
+resilience4j:
+  circuitbreaker:
+    instances:
+
+      # ── Customer Service CB ───────────────────────────────
+      customerCB:
+        # Taille de la fenêtre glissante.
+        # Le CB analyse les 10 DERNIÈRES requêtes pour calculer
+        # le taux d'échec. Les requêtes plus anciennes sont ignorées.
+        sliding-window-size: 10
+
+        # Seuil d'ouverture du circuit.
+        # Si 50% ou plus des 10 dernières requêtes échouent
+        # (erreur réseau, timeout, 5xx), le circuit s'ouvre.
+        failure-rate-threshold: 50
+
+        # Durée pendant laquelle le circuit reste ouvert.
+        # Pendant ces 10s, toutes les requêtes vont au fallback
+        # sans même essayer de joindre le service.
+        # Cela laisse le temps au service de redémarrer.
+        wait-duration-in-open-state: 10s
+
+        # En état HALF-OPEN, le CB laisse passer 3 requêtes test.
+        # Si elles réussissent → circuit CLOSED (service rétabli).
+        # Si elles échouent → circuit OPEN à nouveau pour 10s.
+        permitted-number-of-calls-in-half-open-state: 3
+
+      # ── Account Service CB ────────────────────────────────
+      accountCB:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+
+      # ── Transfer Service CB — PLUS STRICT ─────────────────
+      transactionCB:
+        # Fenêtre plus grande : on analyse 20 requêtes
+        # pour avoir une décision plus fiable sur un service
+        # dont les opérations sont longues et variables.
+        sliding-window-size: 20
+
+        # Seuil plus bas que les autres services (40% au lieu de 50%).
+        # On préfère couper le circuit plus tôt pour les transferts :
+        # un transfert financier échoué est moins grave qu'un
+        # transfert dupliqué ou dans un état incohérent.
+        failure-rate-threshold: 40
+
+        # Temps d'attente plus long (15s) pour laisser le temps
+        # au saga pattern de terminer ses compensations en cours
+        # avant de rouvrir le circuit.
+        wait-duration-in-open-state: 15s
+
+        # Plus de requêtes test en half-open (5 au lieu de 3)
+        # pour s'assurer que le service est vraiment stable
+        # avant de rouvrir complètement.
+        permitted-number-of-calls-in-half-open-state: 5
+
+      # ── Loan Service CB ───────────────────────────────────
+      loanCB:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        # Temps d'attente plus long (20s) car une demande de prêt
+        # implique des traitements OCR et IA potentiellement lents.
+        # On attend plus longtemps avant de re-tester le service.
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 3
+
+      # ── IAM Service CB ────────────────────────────────────
+      iamCB:
+        sliding-window-size: 10
+        # Seuil très bas (30%) : si le service d'authentification
+        # commence à échouer, on coupe immédiatement. Une faille
+        # d'authentification est le pire scénario de sécurité.
+        failure-rate-threshold: 30
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 2
+
+
+# ════════════════════════════════════════════════════════════
+#  LOGGING — niveaux de journalisation
+#  En production, passer gateway à INFO pour réduire le volume.
+#  Les logs sont collectés par Logstash (stack ELK).
+# ════════════════════════════════════════════════════════════
+logging:
+  level:
+    # Logs détaillés du gateway : routing, filtres, prédicats.
+    # Utile en développement pour déboguer le routage.
+    org.springframework.cloud.gateway: DEBUG
+
+    # Logs applicatifs métier (filtres personnalisés, fallbacks).
+    com.banking.gateway: DEBUG

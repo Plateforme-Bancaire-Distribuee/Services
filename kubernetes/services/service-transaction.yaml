@@ -1,0 +1,133 @@
+---
+# ConfigMap pour Service Transaction
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transaction-service-config
+  namespace: banking-system
+data:
+  application.properties: |
+    spring.application.name=service-transaction
+    server.port=8083
+    
+    spring.datasource.url=jdbc:postgresql://postgres-services:5432/transaction_db
+    spring.datasource.username=postgres
+    spring.datasource.password=postgres
+    spring.datasource.driver-class-name=org.postgresql.Driver
+    
+    spring.jpa.hibernate.ddl-auto=update
+    spring.jpa.show-sql=false
+    spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+    
+    spring.kafka.bootstrap-servers=kafka:9092
+    spring.kafka.consumer.group-id=transaction-service-group
+    
+    eureka.client.service-url.defaultZone=http://service-registry:8761/eureka/
+    eureka.instance.prefer-ip-address=true
+    
+    account.service.url=http://service-account:8082
+    
+    management.endpoints.web.exposure.include=*
+
+---
+# Deployment Service Transaction
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-transaction
+  namespace: banking-system
+  labels:
+    app: service-transaction
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: service-transaction
+  template:
+    metadata:
+      labels:
+        app: service-transaction
+        version: v1
+    spec:
+      containers:
+      - name: service-transaction
+        image: service-transaction:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8083
+          name: http
+          protocol: TCP
+        env:
+        - name: SPRING_CONFIG_LOCATION
+          value: "file:/etc/config/application.properties"
+        - name: JAVA_OPTS
+          value: "-Xms256m -Xmx512m"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8083
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8083
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: transaction-service-config
+
+---
+# Service Transaction Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-transaction
+  namespace: banking-system
+  labels:
+    app: service-transaction
+spec:
+  type: ClusterIP
+  selector:
+    app: service-transaction
+  ports:
+  - port: 8083
+    targetPort: 8083
+    protocol: TCP
+    name: http
+
+---
+# HorizontalPodAutoscaler pour Service Transaction
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transaction-service-hpa
+  namespace: banking-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: service-transaction
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

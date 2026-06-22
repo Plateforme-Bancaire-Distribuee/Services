@@ -1,0 +1,126 @@
+---
+# ConfigMap pour Document Service
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: document-service-config
+  namespace: banking-system
+data:
+  .env: |
+    # PostgreSQL
+    DATABASE_URL=postgresql://postgres:postgres@postgres-services:5432/document_db
+    DATABASE_ECHO=False
+    
+    # Kafka
+    KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    KAFKA_TOPIC_DOCUMENTS=documents
+    
+    # MinIO
+    MINIO_ROOT_USER=minioadmin
+    MINIO_ROOT_PASSWORD=minioadmin
+    MINIO_URL=http://minio:9000
+    MINIO_BUCKET_NAME=documents
+    
+    # OCR Service
+    OCR_SERVICE_URL=http://service-document:8082/ocr
+    
+    # Eureka
+    EUREKA_URL=http://service-registry:8761/eureka
+    
+    # App
+    APP_NAME=service-document
+    APP_VERSION=1.0.0
+    LOG_LEVEL=INFO
+
+---
+# Deployment Document Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-document
+  namespace: banking-system
+  labels:
+    app: service-document
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: service-document
+  template:
+    metadata:
+      labels:
+        app: service-document
+        version: v1
+    spec:
+      containers:
+      - name: service-document
+        image: service-document:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8082
+          name: http
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: document-service-config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /docs
+            port: 8082
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 30
+          periodSeconds: 5
+
+---
+# Service Document Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-document
+  namespace: banking-system
+  labels:
+    app: service-document
+spec:
+  type: ClusterIP
+  selector:
+    app: service-document
+  ports:
+  - port: 8082
+    targetPort: 8082
+    protocol: TCP
+    name: http
+
+---
+# HorizontalPodAutoscaler pour Service Document
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: document-service-hpa
+  namespace: banking-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: service-document
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

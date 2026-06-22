@@ -1,9 +1,13 @@
 package com.banking.customer_service.controller;
 
+import com.banking.customer_service.dto.request.AccountRequest;
+import com.banking.customer_service.dto.request.CustomerCreatedEvent;
 import com.banking.customer_service.dto.request.UpdateProfileRequest;
 import com.banking.customer_service.dto.response.ApiResponse;
 import com.banking.customer_service.dto.response.CustomerResponse;
+import com.banking.customer_service.entity.Client;
 import com.banking.customer_service.entity.User;
+import com.banking.customer_service.kafka.CustomerKafkaProducer;
 import com.banking.customer_service.service.CustomerService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -14,6 +18,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/v1/customers")
 @RequiredArgsConstructor
@@ -22,6 +28,7 @@ import org.springframework.web.bind.annotation.*;
 public class CustomerController {
 
     private final CustomerService customerService;
+    private final CustomerKafkaProducer customerKafkaProducer;
 
     @GetMapping("/me")
     @Operation(summary = "Récupérer mon profil")
@@ -73,5 +80,32 @@ public class CustomerController {
             @RequestParam String raison) {
         customerService.cloturerClient(clientId, raison);
         return ResponseEntity.ok(ApiResponse.ok("Client clôturé", null));
+    }
+
+    @PostMapping("/{clientId}/request-account")
+    public ResponseEntity<String> requestAccountCreation(
+            @PathVariable Long clientId,
+            @RequestHeader("Authorization") String authHeader) {
+
+        String token = authHeader.replace("Bearer ", "");
+
+        // Vérifier que le client existe
+        Client client = customerService.getCustomerById(clientId);
+
+        // Créer l'événement
+        CustomerCreatedEvent event = new CustomerCreatedEvent(
+                client.getClientId(),
+                token
+        );
+
+        // Publier sur Kafka
+        customerKafkaProducer.publishCustomerCreated(event);
+
+        return ResponseEntity.ok("Demande d'ouverture de compte envoyée !");
+    }
+
+    @GetMapping("/{clientId}/accounts")
+    public ResponseEntity<List<AccountRequest>> getCustomerAccounts(@PathVariable Long clientId) {
+        return ResponseEntity.ok(customerService.getCustomerAccounts(clientId));
     }
 }
